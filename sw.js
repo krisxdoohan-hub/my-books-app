@@ -1,5 +1,5 @@
 // 更新版號以強制刷新
-const CACHE_NAME = 'star-reader-v0.0.1'; 
+const CACHE_NAME = 'star-reader-v0.1.0'; 
 const ASSETS = [
     './',
     // 移除 './index.html' 避免 308 錯誤
