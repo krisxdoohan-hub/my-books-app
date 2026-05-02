@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>星閱 - 手機小說閱讀器</title>
+    
+    <!-- PWA Meta -->
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3145/3145765.png">
+
+    <!-- CSS & Icons -->
+    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- Libraries for EPUB -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+
+    <style>
+        :root {
+            --safe-area-inset-top: env(safe-area-inset-top);
+            --safe-area-inset-bottom: env(safe-area-inset-bottom);
+        }
+        body {
+            padding-top: var(--safe-area-inset-top);
+            padding-bottom: var(--safe-area-inset-bottom);
+            -webkit-tap-highlight-color: transparent;
+        }
+        .reader-content p {
+            margin-bottom: 1.5em;
+            line-height: 1.8;
+        }
+        /* 隱藏捲軸但保持滾動 */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        /* 針對 Z Flip 等長螢幕優化 */
+        @media (min-aspect-ratio: 1/2) {
+            .max-w-phone {
+                max-width: 480px;
+                margin: 0 auto;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans selection:bg-sky-500/30 overflow-hidden">
+
+    <!-- 主容器 -->
+    <div id="app" class="h-screen flex flex-col max-w-phone relative bg-slate-900">
+        
+        <!-- 頂部導覽列 -->
+        <header id="header" class="flex items-center justify-between px-4 py-4 border-b border-slate-800 shrink-0">
+            <h1 class="text-xl font-bold flex items-center gap-2">
+                <i class="ph-bold ph-book-open text-sky-400"></i>
+                星閱
+            </h1>
+            <div class="flex gap-4">
+                <button onclick="putGitHubData()" class="p-2 hover:bg-slate-800 rounded-full transition-colors group relative" title="手動上傳至雲端">
+                    <i class="ph-bold ph-cloud-arrow-up text-xl text-slate-400" id="sync-icon"></i>
+                    <span class="absolute -top-1 -right-1 flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-500"></span>
+                    </span>
+                </button>
+                <button onclick="toggleCloudConfig()" class="p-2 hover:bg-slate-800 rounded-full transition-colors" title="設定">
+                    <i class="ph-bold ph-gear text-xl text-slate-400"></i>
+                </button>
+                <button onclick="openFilePicker()" class="p-2 bg-sky-500 hover:bg-sky-600 rounded-full transition-colors text-white shadow-lg shadow-sky-500/20">
+                    <i class="ph-bold ph-plus text-xl"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- 雲端設定區塊 (預設隱藏) -->
+        <div id="cloud-config" class="hidden absolute top-16 left-4 right-4 bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-2xl z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-bold flex items-center gap-2 text-sky-400">
+                    <i class="ph-bold ph-github-logo"></i> GitHub 同步設定
+                </h3>
+                <button onclick="toggleCloudConfig()" class="text-slate-400"><i class="ph-bold ph-x"></i></button>
+            </div>
+            <div class="space-y-3 shrink-0">
+                <input type="password" id="gh-token" placeholder="GitHub Token (Classic)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500">
+                <input type="text" id="gh-repo" placeholder="帳號/儲存庫 (例: user/my-books)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500">
+                <input type="text" id="gh-path" placeholder="檔案路徑 (預設: data.json)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500">
+                <button onclick="saveConfig()" class="w-full bg-sky-500 hover:bg-sky-600 py-2 rounded-lg font-bold text-sm transition-all active:scale-95">儲存並同步</button>
+            </div>
+            <p class="text-[10px] text-slate-500 mt-2">設定後書籍清單將自動與 GitHub 私人儲存庫保持一致。</p>
+        </div>
+
+        <!-- 檔案選擇器 (隱藏) -->
+        <input type="file" id="file-picker" accept=".txt,.epub" class="hidden" onchange="handleFileSelect(event)">
+
+        <!-- 書架列表區 -->
+        <main id="library" class="flex-1 overflow-y-auto p-4 no-scrollbar">
+            <div id="book-list" class="grid grid-cols-2 gap-4">
+                <!-- 書籍動態插入處 -->
+            </div>
+            
+            <!-- 版本與維護資訊 -->
+            <div class="mt-12 mb-8 text-center">
+                <p class="text-[10px] text-slate-700 tracking-widest font-mono uppercase">StarReader System</p>
+                <p class="text-[10px] text-slate-700 font-mono" id="version-display">v0.0.0</p>
+            </div>
+            
+            <!-- 空狀態 -->
+            <div id="empty-state" class="hidden flex flex-col items-center justify-center h-full text-slate-500 py-20">
+                <i class="ph ph-books text-6xl mb-4"></i>
+                <p>書架上空空如也</p>
+                <button onclick="openFilePicker()" class="mt-4 text-sky-400 underline">立即加入第一本書</button>
+            </div>
+        </main>
+
+        <!-- 閱讀器 UI (滿版疊加) -->
+        <div id="reader" class="hidden fixed inset-0 bg-slate-900 z-[100] flex flex-col transition-colors duration-300">
+            <!-- 模擬亮度遮罩 (透過透明黑背景達成) -->
+            <div id="brightness-overlay" class="pointer-events-none fixed inset-0 bg-black/0 z-[110]"></div>
+
+            <header id="reader-header" class="flex items-center justify-between px-4 py-3 bg-slate-800/80 backdrop-blur-md shrink-0 z-[105]">
+                <button onclick="closeReader()" class="flex items-center gap-1 text-slate-300">
+                    <i class="ph-bold ph-caret-left"></i> 返回
+                </button>
+                <div class="flex items-center gap-4">
+                    <span id="reader-title" class="text-xs text-slate-400 truncate max-w-[120px]">書名...</span>
+                    <button onclick="toggleReaderSettings()" class="p-2 bg-slate-700/50 rounded-full active:scale-95 transition-transform">
+                        <i class="ph-bold ph-text-aa text-xl"></i>
+                    </button>
+                </div>
+            </header>
+            
+            <!-- 閱讀偏好設定彈窗 -->
+            <div id="reader-settings" class="hidden absolute bottom-0 left-0 right-0 bg-slate-800 rounded-t-3xl p-6 shadow-2xl z-[120] animate-in slide-in-from-bottom duration-300 border-t border-slate-700">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="font-bold flex items-center gap-2 px-1"><i class="ph-bold ph-sliders"></i> 閱讀設定</h3>
+                    <button onclick="toggleReaderSettings()" class="text-slate-400 p-1"><i class="ph-bold ph-x text-lg"></i></button>
+                </div>
+
+                <div class="space-y-6">
+                    <!-- 字體與行距 -->
+                    <div class="flex items-center justify-between gap-4">
+                        <div class="flex-1">
+                            <p class="text-[10px] text-slate-500 mb-2 uppercase tracking-wider font-bold">字體大小</p>
+                            <div class="flex items-center bg-slate-900 rounded-lg p-1">
+                                <button onclick="adjustFont(-1)" class="flex-1 p-2 active:bg-slate-800 rounded-md"><i class="ph ph-minus"></i></button>
+                                <span id="font-size-label" class="flex-1 text-center font-bold text-sm">18</span>
+                                <button onclick="adjustFont(1)" class="flex-1 p-2 active:bg-slate-800 rounded-md"><i class="ph ph-plus"></i></button>
+                            </div>
+                        </div>
+                        <div class="flex-1">
+                            <p class="text-[10px] text-slate-500 mb-2 uppercase tracking-wider font-bold">行間距</p>
+                            <div class="flex items-center bg-slate-900 rounded-lg p-1">
+                                <button onclick="setLineHeight(1.5)" class="flex-1 p-2 text-[10px] active:bg-slate-800 rounded-md">緊湊</button>
+                                <button onclick="setLineHeight(1.9)" class="flex-1 p-2 text-[10px] border-x border-slate-800 active:bg-slate-800">舒適</button>
+                                <button onclick="setLineHeight(2.4)" class="flex-1 p-2 text-[10px] active:bg-slate-800 rounded-md">寬鬆</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 主題選擇 -->
+                    <div>
+                        <p class="text-[10px] text-slate-500 mb-2 uppercase tracking-wider font-bold">色彩主題</p>
+                        <div class="grid grid-cols-4 gap-3">
+                            <button onclick="setReaderTheme('light')" class="h-10 rounded-xl bg-white border-2 border-transparent transition-all" id="theme-light"></button>
+                            <button onclick="setReaderTheme('sepia')" class="h-10 rounded-xl bg-[#f4ecd8] border-2 border-transparent transition-all" id="theme-sepia"></button>
+                            <button onclick="setReaderTheme('green')" class="h-10 rounded-xl bg-[#e3f0e7] border-2 border-transparent transition-all" id="theme-green"></button>
+                            <button onclick="setReaderTheme('dark')" class="h-10 rounded-xl bg-slate-900 border-2 border-transparent transition-all" id="theme-dark"></button>
+                        </div>
+                    </div>
+
+                    <!-- 亮度調節 -->
+                    <div>
+                        <div class="flex justify-between text-[10px] text-slate-500 mb-2 uppercase tracking-wider font-bold">
+                            <span>虛擬亮度</span>
+                            <span id="light-label">100%</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <i class="ph ph-sun-dim text-slate-500"></i>
+                            <input type="range" min="20" max="100" value="100" class="flex-1 h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-sky-500" oninput="updateBrightness(this.value)">
+                            <i class="ph ph-sun text-slate-400"></i>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-6 pt-4 border-t border-slate-700/50 text-[10px] text-center text-slate-500">
+                    設定將自動同步至此裝置。
+                </div>
+            </div>
+            
+            <!-- TXT 內容區 -->
+            <div id="txt-container" class="flex-1 overflow-y-auto p-6 reader-content no-scrollbar transition-all duration-300">
+                <!-- 內容插入處 -->
+            </div>
+
+            <!-- EPUB 內容區 -->
+            <div id="epub-viewer" class="flex-1 hidden"></div>
+            
+            <!-- 閱讀導覽 (EPUB 專用) -->
+            <footer id="epub-nav" class="hidden flex items-center justify-between px-6 py-4 bg-slate-900/50 backdrop-blur-sm shrink-0 border-t border-white/5">
+                <button onclick="prevPage()" class="p-2 active:bg-white/10 rounded-full"><i class="ph-bold ph-arrow-left text-xl"></i></button>
+                <span id="page-info" class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">載入中...</span>
+                <button onclick="nextPage()" class="p-2 active:bg-white/10 rounded-full"><i class="ph-bold ph-arrow-right text-xl"></i></button>
+            </footer>
+        </div>
+
+    </div>
+
+    <script>
+        // 0. 版本資訊
+        const APP_VERSION = "v0.0.0";
+
+        // 1. 初始化資料
+        let records = []; // 書籍資料 {id, name, type, data, lastReadPos, size}
+        let config = JSON.parse(localStorage.getItem('reader_config')) || { token: '', repo: '', path: 'data.json' };
+        
+        // 閱讀偏好設定
+        let settings = JSON.parse(localStorage.getItem('reader_settings')) || { 
+            fontSize: 18, 
+            lineHeight: 1.9, 
+            theme: 'dark', 
+            brightness: 100 
+        };
+
+        let currentEpub = null;
+        let rendezvous = null;
+        let currentBookId = null;
+
+        // 2. 生命週期
+        window.addEventListener('DOMContentLoaded', () => {
+            loadLocalRecords();
+            renderLibrary();
+            initSettings();
+            applyReaderSettings(); // 套用偏好
+            
+            // 【自動下載】：啟動時若有設定 GitHub，自動抓取最新進度
+            if (config.token && config.repo) {
+                fetchGitHubData();
+            }
+
+            // 註冊 PWA
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW fail:', err));
+            }
+
+            // TXT 滾動監聽 (記憶斷點)
+            const txtCont = document.getElementById('txt-container');
+            txtCont.addEventListener('scroll', () => {
+                if (currentBookId) {
+                    const book = records.find(b => b.id === currentBookId);
+                    if (book && book.type === 'txt') {
+                        book.lastReadPos = txtCont.scrollTop;
+                        saveLocalRecords(); // 滾動即存入 LocalStorage
+                    }
+                }
+            }, { passive: true });
+        });
+
+        function initSettings() {
+            document.getElementById('gh-token').value = config.token || '';
+            document.getElementById('gh-repo').value = config.repo || '';
+            document.getElementById('gh-path').value = config.path || 'data.json';
+        }
+
+        // 3. UI 操作
+        function openFilePicker() {
+            document.getElementById('file-picker').click();
+        }
+
+        function toggleCloudConfig() {
+            const el = document.getElementById('cloud-config');
+            el.classList.toggle('hidden');
+        }
+
+        function toggleReaderSettings() {
+            const el = document.getElementById('reader-settings');
+            el.classList.toggle('hidden');
+        }
+
+        function saveConfig() {
+            config.token = document.getElementById('gh-token').value.trim();
+            config.repo = document.getElementById('gh-repo').value.trim();
+            config.path = document.getElementById('gh-path').value.trim() || 'data.json';
+            localStorage.setItem('reader_config', JSON.stringify(config));
+            toggleCloudConfig();
+            alert('設定已儲存！將自動從雲端下載最新進度...');
+            fetchGitHubData();
+        }
+
+        // 4. 閱讀偏好設定邏輯
+        function applyReaderSettings() {
+            const txtCont = document.getElementById('txt-container');
+            const reader = document.getElementById('reader');
+            const header = document.getElementById('reader-header');
+            const nav = document.getElementById('epub-nav');
+            const overlay = document.getElementById('brightness-overlay');
+            
+            // 1. 套用字體與行距
+            txtCont.style.fontSize = settings.fontSize + 'px';
+            txtCont.style.lineHeight = settings.lineHeight;
+            document.getElementById('font-size-label').innerText = settings.fontSize;
+
+            // 2. 套用亮度
+            overlay.style.backgroundColor = `rgba(0,0,0,${(100 - settings.brightness) / 100})`;
+            document.getElementById('light-label').innerText = settings.brightness + '%';
+
+            // 3. 套用主題
+            const themes = {
+                light: { bg: '#ffffff', text: '#334155', header: '#f1f5f9', nav: '#f1f5f9' },
+                sepia: { bg: '#f4ecd8', text: '#5b4636', header: '#e8dec2', nav: '#e8dec2' },
+                green: { bg: '#e3f0e7', text: '#2d3e33', header: '#d4e6d9', nav: '#d4e6d9' },
+                dark: { bg: '#0f172a', text: '#cbd5e1', header: '#1e293b', nav: '#1e293b' }
+            };
+            const current = themes[settings.theme];
+            reader.style.backgroundColor = current.bg;
+            txtCont.style.color = current.text;
+            header.style.backgroundColor = current.header;
+            if (nav) nav.style.backgroundColor = current.nav;
+
+            // 更新按鈕邊框
+            ['light', 'sepia', 'green', 'dark'].forEach(t => {
+                const btn = document.getElementById('theme-' + t);
+                if (btn) btn.style.borderColor = (settings.theme === t) ? '#3b82f6' : 'transparent';
+            });
+
+            // 如果 EPUB 正在運行，同步套用
+            if (rendezvous) {
+                rendezvous.themes.fontSize(settings.fontSize + 'px');
+                rendezvous.themes.select(settings.theme);
+            }
+        }
+
+        function adjustFont(delta) {
+            settings.fontSize += delta;
+            if (settings.fontSize < 12) settings.fontSize = 12;
+            if (settings.fontSize > 40) settings.fontSize = 40;
+            saveSettings();
+        }
+
+        function setLineHeight(val) {
+            settings.lineHeight = val;
+            saveSettings();
+        }
+
+        function setReaderTheme(t) {
+            settings.theme = t;
+            saveSettings();
+        }
+
+        function updateBrightness(val) {
+            settings.brightness = val;
+            applyReaderSettings(); // 即時套用
+            localStorage.setItem('reader_settings', JSON.stringify(settings));
+        }
+
+        function saveSettings() {
+            localStorage.setItem('reader_settings', JSON.stringify(settings));
+            applyReaderSettings();
+        }
+
+        // 5. 檔案處理 (保持不變)
+        async function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                const type = file.name.toLowerCase().endsWith('.epub') ? 'epub' : 'txt';
+                let content = event.target.result;
+
+                const newBook = {
+                    id: Date.now().toString(),
+                    name: file.name.replace('.txt', '').replace('.epub', ''),
+                    type: type,
+                    data: content, 
+                    size: file.size,
+                    lastReadPos: 0,
+                    addedAt: new Date().toISOString()
+                };
+
+                records.push(newBook);
+                saveLocalRecords();
+                renderLibrary();
+            };
+
+            if (file.name.toLowerCase().endsWith('.epub')) {
+                reader.readAsDataURL(file);
+            } else {
+                reader.readAsText(file);
+            }
+        }
+
+        // 5. 渲染與存儲
+        function saveLocalRecords() {
+            try {
+                localStorage.setItem('reader_records', JSON.stringify(records));
+            } catch (e) {
+                console.warn('LocalStorage limit reached!');
+                // 這裡可以考慮清理舊書或提醒使用者
+            }
+        }
+
+        function loadLocalRecords() {
+            const stored = localStorage.getItem('reader_records');
+            if (stored) records = JSON.parse(stored);
+        }
+
+        function renderLibrary() {
+            const list = document.getElementById('book-list');
+            const empty = document.getElementById('empty-state');
+            list.innerHTML = '';
+
+            if (records.length === 0) {
+                empty.classList.remove('hidden');
+                return;
+            } else {
+                empty.classList.add('hidden');
+            }
+
+            records.forEach(book => {
+                const card = document.createElement('div');
+                card.className = 'bg-slate-800 rounded-xl p-4 flex flex-col gap-3 border border-slate-700 active:scale-95 transition-transform duration-200 cursor-pointer';
+                card.onclick = () => openReader(book);
+                
+                // 顯示閱讀進度
+                let progressText = '未開始';
+                if (book.type === 'txt' && book.lastReadPos > 0) {
+                    progressText = '閱讀中';
+                } else if (book.type === 'epub' && book.lastReadPos) {
+                    progressText = '閱讀中';
+                }
+
+                card.innerHTML = `
+                    <div class="h-24 bg-slate-700/50 rounded flex items-center justify-center relative overflow-hidden">
+                        <i class="ph-bold ${book.type === 'epub' ? 'ph-books' : 'ph-file-text'} text-3xl text-sky-400/50"></i>
+                         ${book.lastReadPos ? '<div class="absolute top-2 right-2 h-2 w-2 bg-sky-500 rounded-full"></div>' : ''}
+                    </div>
+                    <div class="space-y-1">
+                        <h4 class="text-sm font-bold truncate">${book.name}</h4>
+                        <div class="flex justify-between items-center">
+                             <p class="text-[10px] text-slate-500">${(book.size / 1024).toFixed(1)} KB</p>
+                             <p class="text-[10px] text-sky-400/70">${progressText}</p>
+                        </div>
+                    </div>
+                    <button onclick="event.stopPropagation(); deleteBook('${book.id}')" class="text-[10px] text-red-400 self-end">刪除</button>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function deleteBook(id) {
+            if(!confirm('確定要刪除這本書嗎？')) return;
+            records = records.filter(b => b.id !== id);
+            saveLocalRecords();
+            renderLibrary();
+        }
+
+        // 6. 閱讀器邏輯
+        async function openReader(book) {
+            currentBookId = book.id;
+            const readerEl = document.getElementById('reader');
+            const txtCont = document.getElementById('txt-container');
+            const epubCont = document.getElementById('epub-viewer');
+            const epubNav = document.getElementById('epub-nav');
+            
+            document.getElementById('reader-title').innerText = book.name;
+            readerEl.classList.remove('hidden');
+            txtCont.classList.add('hidden');
+            epubCont.classList.add('hidden');
+            epubNav.classList.add('hidden');
+
+            applyReaderSettings(); // 開啟時套用樣式
+
+            if (book.type === 'txt') {
+                txtCont.classList.remove('hidden');
+                txtCont.innerHTML = book.data.split('\n').map(p => `<p class="mb-4">${p}</p>`).join('');
+                
+                // 【記憶斷點】：TXT 恢復捲動位置
+                setTimeout(() => {
+                    txtCont.scrollTop = book.lastReadPos || 0;
+                }, 100);
+            } else {
+                epubCont.classList.remove('hidden');
+                epubNav.classList.remove('hidden');
+                await loadEpub(book);
+            }
+        }
+
+        function closeReader() {
+            document.getElementById('reader').classList.add('hidden');
+            document.getElementById('reader-settings').classList.add('hidden');
+            currentBookId = null;
+            if (currentEpub) {
+                currentEpub.destroy();
+                currentEpub = null;
+            }
+            renderLibrary(); // 更新書架上的小圓點/進度
+        }
+
+        // EPUB.js 邏輯
+        async function loadEpub(book) {
+            const epubCont = document.getElementById('epub-viewer');
+            epubCont.innerHTML = '';
+            
+            currentEpub = ePub(book.data);
+            rendezvous = currentEpub.renderTo("epub-viewer", {
+                width: "100%",
+                height: "100%",
+                flow: "paginated",
+                manager: "default"
+            });
+
+            // 註冊主題顏色供 EPUB.js 使用 (背景設為透明以渲染底層顏色)
+            rendezvous.themes.register({
+                light: { body: { "color": "#334155 !important", "background": "transparent !important" } },
+                sepia: { body: { "color": "#5b4636 !important", "background": "transparent !important" } },
+                green: { body: { "color": "#2d3e33 !important", "background": "transparent !important" } },
+                dark: { body: { "color": "#cbd5e1 !important", "background": "transparent !important" } }
+            });
+
+            // 【記憶斷點】：EPUB 恢復上次所在的 CFI 位置
+            rendezvous.display(book.lastReadPos || undefined);
+            
+            rendezvous.themes.fontSize(settings.fontSize + 'px');
+            rendezvous.themes.select(settings.theme);
+
+            rendezvous.on("relocated", (location) => {
+                document.getElementById('page-info').innerText = `進度: ${Math.floor(location.start.percentage * 100)}%`;
+                
+                // 【記憶斷點】：存入當前 EPUB 位置 (CFI)
+                if (currentBookId) {
+                    const b = records.find(x => x.id === currentBookId);
+                    if (b) {
+                        b.lastReadPos = location.start.cfi;
+                        saveLocalRecords();
+                    }
+                }
+            });
+        }
+
+        function prevPage() { if (rendezvous) rendezvous.prev(); }
+        function nextPage() { if (rendezvous) rendezvous.next(); }
+
+        // 7. GitHub 同步邏輯
+        async function fetchGitHubData() {
+            if (!config.token || !config.repo) return;
+            const icon = document.getElementById('sync-icon');
+            icon.classList.add('ph-spinner', 'animate-spin');
+
+            try {
+                const url = `https://api.github.com/repos/${config.repo}/contents/${config.path}`;
+                const res = await fetch(url, {
+                    headers: { 'Authorization': `token ${config.token}` }
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const content = decodeURIComponent(atob(data.content).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+                    const remoteRecords = JSON.parse(content);
+                    
+                    // 【自動下載】：直接合併進度
+                    // 同一本書以最新的 lastReadPos 為準，或是簡單以遠端覆蓋 local (通常雲端是最新狀態)
+                    records = remoteRecords;
+                    saveLocalRecords();
+                    renderLibrary();
+                    console.log('Auto-Sync Down: Success');
+                }
+            } catch (e) {
+                console.error('GH Fetch Error (Auto-Sync):', e);
+            } finally {
+                icon.classList.remove('ph-spinner', 'animate-spin');
+            }
+        }
+
+        async function putGitHubData() {
+            if (!config.token || !config.repo) {
+                alert('請先在設定中填寫 GitHub Token 與 Repo');
+                return;
+            }
+            const icon = document.getElementById('sync-icon');
+            icon.classList.add('ph-spinner', 'animate-spin');
+
+            try {
+                const url = `https://api.github.com/repos/${config.repo}/contents/${config.path}`;
+                
+                // 需要先獲取現有的 sha 才能更新
+                const getRes = await fetch(url, {
+                    headers: { 'Authorization': `token ${config.token}` }
+                });
+                
+                let sha = null;
+                if (getRes.ok) {
+                    const existing = await getRes.json();
+                    sha = existing.sha;
+                }
+
+                const content = btoa(unescape(encodeURIComponent(JSON.stringify(records))));
+                const body = {
+                    message: "Manual Sync Bookmark Position",
+                    content: content,
+                    sha: sha
+                };
+
+                const res = await fetch(url, {
+                    method: 'PUT',
+                    headers: { 
+                        'Authorization': `token ${config.token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                if (res.ok) {
+                    alert('手動同步完成！進度已備份至 GitHub。');
+                } else {
+                    const err = await res.json();
+                    alert('同步失敗: ' + (err.message || '未知錯誤'));
+                }
+            } catch (e) {
+                console.error('GH Put Error:', e);
+                alert('上傳發生錯誤，請檢查網路或設定。');
+            } finally {
+                icon.classList.remove('ph-spinner', 'animate-spin');
+            }
+        }
+    </script>
+</body>
+</html>
