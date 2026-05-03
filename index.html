@@ -22,13 +22,30 @@
 
     <style>
         :root {
-            --safe-area-inset-top: env(safe-area-inset-top);
-            --safe-area-inset-bottom: env(safe-area-inset-bottom);
+            --safe-area-inset-top: env(safe-area-inset-top, 0px);
+            --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
         }
         body {
-            padding-top: var(--safe-area-inset-top);
-            padding-bottom: var(--safe-area-inset-bottom);
             -webkit-tap-highlight-color: transparent;
+        }
+        /* 安全區域適配 */
+        #header {
+            padding-top: calc(1rem + var(--safe-area-inset-top));
+        }
+        #reader-header {
+            padding-top: calc(0.75rem + var(--safe-area-inset-top));
+        }
+        #library {
+            padding-bottom: calc(1rem + var(--safe-area-inset-bottom));
+        }
+        #reader-settings {
+            padding-bottom: calc(1.5rem + var(--safe-area-inset-bottom));
+        }
+        #txt-container {
+            padding-bottom: calc(1.5rem + var(--safe-area-inset-bottom));
+        }
+        #epub-nav {
+            padding-bottom: calc(1rem + var(--safe-area-inset-bottom));
         }
         .reader-content p {
             margin-bottom: 1.5em;
@@ -54,7 +71,7 @@
 <body class="bg-slate-900 text-slate-100 font-sans selection:bg-sky-500/30 overflow-hidden">
 
     <!-- 主容器 -->
-    <div id="app" class="h-screen flex flex-col max-w-phone relative bg-slate-900">
+    <div id="app" class="h-[100dvh] flex flex-col max-w-phone relative bg-slate-900">
         
         <!-- 頂部導覽列 -->
         <header id="header" class="flex items-center justify-between px-4 py-4 border-b border-slate-800 shrink-0">
@@ -213,7 +230,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.1.1";
+        const APP_VERSION = "v0.1.2";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
@@ -316,46 +333,75 @@
         async function handleFileSelect(e) {
             const file = e.target.files[0];
             if (!file) return;
+            
+            // 重置 input，確保可以重複選取同一檔案
+            const fileInput = e.target;
+
+            // 處理載入中的 UI
+            const loadingHtml = `<div id="loading-indicator" class="col-span-2 flex flex-col items-center justify-center py-16 animate-in fade-in duration-300"><i class="ph-bold ph-circle-notch animate-spin text-5xl mb-4 text-sky-500"></i><p class="text-slate-300 font-bold tracking-wide">正在解析書籍檔案...</p><p class="text-xs text-slate-500 mt-2">大型檔案可能需要幾秒鐘，請耐心等候</p></div>`;
+            document.getElementById('book-list').insertAdjacentHTML('afterbegin', loadingHtml);
+
+            // 讓 UI 有時間渲染載入畫面
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            
+            // 再給予一點點時間確保 DOM 已經更新到畫面上
+            await new Promise(resolve => setTimeout(resolve, 50));
 
             const reader = new FileReader();
             
-            // 處理載入中的 UI
-            const loadingHtml = `<div class="col-span-2 text-center py-10"><i class="ph-bold ph-circle-notch animate-spin text-3xl mb-2 text-sky-500"></i><p>正在解析並存入資料庫...</p></div>`;
-            document.getElementById('book-list').insertAdjacentHTML('afterbegin', loadingHtml);
-
             reader.onload = async (event) => {
-                const isEpub = file.name.toLowerCase().endsWith('.epub');
-                let contentData = event.target.result;
+                // 讀取完成後，再讓出一次執行緒
+                await new Promise(resolve => setTimeout(resolve, 10));
 
-                // 【解決亂碼】：如果是 TXT，偵測編碼
-                if (!isEpub) {
-                    const uint8 = new Uint8Array(contentData);
-                    try {
-                        // 嘗試 UTF-8
-                        contentData = new TextDecoder('utf-8', { fatal: true }).decode(uint8);
-                    } catch (err) {
-                        // 失敗則嘗試 GBK (繁簡網文常用)
-                        console.log('UTF-8 失敗，嘗試 GBK 解碼');
-                        contentData = new TextDecoder('gbk').decode(uint8);
+                try {
+                    const isEpub = file.name.toLowerCase().endsWith('.epub');
+                    let contentData = event.target.result;
+
+                    // 【解決亂碼】：如果是 TXT，偵測編碼
+                    if (!isEpub) {
+                        const uint8 = new Uint8Array(contentData);
+                        try {
+                            // 嘗試 UTF-8
+                            contentData = new TextDecoder('utf-8', { fatal: true }).decode(uint8);
+                        } catch (err) {
+                            // 失敗則嘗試 GBK (繁簡網文常用)
+                            console.log('UTF-8 失敗，嘗試 GBK 解碼');
+                            contentData = new TextDecoder('gbk').decode(uint8);
+                        }
                     }
+
+                    const bookId = Date.now().toString();
+                    const newBookMetadata = {
+                        id: bookId,
+                        name: file.name.replace('.txt', '').replace('.epub', ''),
+                        type: isEpub ? 'epub' : 'txt',
+                        size: file.size,
+                        lastReadPos: 0,
+                        addedAt: new Date().toISOString()
+                    };
+
+                    // 將重型數據存入 IndexedDB (這是最佔效能的地方，分段非同步執行)
+                    await dbSaveBook({ id: bookId, data: contentData });
+
+                    records.push(newBookMetadata);
+                    saveLocalRecords();
+                    
+                    // 確保完成後更新 UI
+                    renderLibrary();
+                } catch (err) {
+                    console.error("處理檔案時發生錯誤:", err);
+                    alert("載入檔案失敗，請重試！");
+                    renderLibrary(); // 移除載入畫面
+                } finally {
+                    fileInput.value = ''; // 清空
                 }
+            };
 
-                const bookId = Date.now().toString();
-                const newBookMetadata = {
-                    id: bookId,
-                    name: file.name.replace('.txt', '').replace('.epub', ''),
-                    type: isEpub ? 'epub' : 'txt',
-                    size: file.size,
-                    lastReadPos: 0,
-                    addedAt: new Date().toISOString()
-                };
-
-                // 將重型數據存入 IndexedDB
-                await dbSaveBook({ id: bookId, data: contentData });
-
-                records.push(newBookMetadata);
-                saveLocalRecords();
+            reader.onerror = () => {
+                console.error("FileReader 錯誤");
+                alert("讀取檔案失敗！");
                 renderLibrary();
+                fileInput.value = '';
             };
 
             // 以 ArrayBuffer 讀取原始數據，方便後續 TextDecoder 處理
