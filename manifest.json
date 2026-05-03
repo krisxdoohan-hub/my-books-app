@@ -1,9 +1,9 @@
 {
   "name": "星閱 - 手機小說閱讀器",
   "short_name": "星閱",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "支援 TXT/EPUB 格式，具備 GitHub 雲端同步功能的跨平台 PWA 閱讀器。",
-  "start_url": "./index.html",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
