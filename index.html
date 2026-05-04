@@ -40,9 +40,6 @@
         #txt-viewer {
             padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
         }
-        #txt-nav {
-            padding-bottom: max(1rem, env(safe-area-inset-bottom));
-        }
         #epub-nav {
             padding-bottom: max(1rem, env(safe-area-inset-bottom));
         }
@@ -212,12 +209,7 @@
             <!-- TXT 內容區 -->
             <div id="txt-viewer" class="flex-1 overflow-y-auto p-6 reader-content no-scrollbar transition-all duration-300 hidden" style="white-space: pre-wrap; font-family: inherit;"></div>
             
-            <!-- TXT 導覽 (TXT 專用) -->
-            <footer id="txt-nav" class="hidden flex items-center justify-between px-6 py-4 bg-slate-900/50 backdrop-blur-sm shrink-0 border-t border-white/5">
-                <button onclick="prevTxtChunk()" class="p-2 active:bg-white/10 rounded-full"><i class="ph-bold ph-arrow-left text-xl"></i></button>
-                <span id="txt-page-info" class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">1 / 1</span>
-                <button onclick="nextTxtChunk()" class="p-2 active:bg-white/10 rounded-full"><i class="ph-bold ph-arrow-right text-xl"></i></button>
-            </footer>
+            
 
             <!-- EPUB 內容區 -->
             <div id="epub-viewer" class="flex-1 hidden"></div>
@@ -234,7 +226,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.2.0";
+        const APP_VERSION = "v0.2.1";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
@@ -332,8 +324,25 @@
                         window.location.reload();
                     }
                 });
+            } // 這裡原本就有
+
+            // === 👇 新增這段：監聽 TXT 捲動事件，記憶閱讀斷點 ===
+            const txtViewerElement = document.getElementById('txt-viewer');
+            if (txtViewerElement) {
+                txtViewerElement.addEventListener('scroll', () => {
+                    if (currentBookId) {
+                        const book = records.find(b => b.id === currentBookId);
+                        if (book && book.type === 'txt') {
+                            book.lastReadPos = txtViewerElement.scrollTop;
+                            saveLocalRecords();
+                        }
+                    }
+                }, { passive: true });
             }
-        });
+            // === 👆 新增結束 ===
+
+        }); // 這裡原本就有
+        
 
         function initSettings() {
             document.getElementById('gh-token').value = config.token || '';
@@ -475,11 +484,63 @@
         }
 
         async function deleteBook(id) {
-            if(!confirm('確定要從裝置刪除這份檔案嗎？')) return;
+            if(!confirm('確定要從裝置與雲端完全刪除這份檔案嗎？')) return;
+            
+            // 1. 取得準備刪除的書籍資訊 (需要知道副檔名以刪除雲端實體檔案)
+            const bookToDelete = records.find(b => b.id === id);
+            if (!bookToDelete) return;
+
+            // 2. 移除本地 IndexedDB 與清單
             records = records.filter(b => b.id !== id);
             await dbDeleteBook(id);
             saveLocalRecords();
             renderLibrary();
+
+            // 3. 同步刪除 GitHub 雲端檔案與更新目錄
+            if (config.token && config.repo) {
+                const icon = document.getElementById('sync-icon');
+                if(icon) icon.classList.add('ph-spinner', 'animate-spin');
+                
+                try {
+                    const dirPath = (config.path || 'data.json').split('/').slice(0, -1).join('/');
+                    const ext = bookToDelete.type === 'epub' ? 'epub' : 'txt';
+                    const filePath = dirPath ? `${dirPath}/${id}.${ext}` : `${id}.${ext}`;
+                    const apiUrl = `https://api.github.com/repos/${config.repo}/contents`;
+
+                    // A. 刪除雲端實體檔案
+                    const fileRes = await fetch(`${apiUrl}/${filePath}`, { headers: { 'Authorization': `token ${config.token}` } });
+                    if (fileRes.ok) {
+                        const fileData = await fileRes.json();
+                        await fetch(`${apiUrl}/${filePath}`, {
+                            method: 'DELETE',
+                            headers: { 'Authorization': `token ${config.token}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message: `Delete book ${bookToDelete.name}`, sha: fileData.sha })
+                        });
+                    }
+
+                    // B. 覆寫更新雲端的 data.json (移除該書的紀錄)
+                    const metaPath = config.path || 'data.json';
+                    let metaSha = null;
+                    const metaRes = await fetch(`${apiUrl}/${metaPath}`, { headers: { 'Authorization': `token ${config.token}` } });
+                    if (metaRes.ok) {
+                        const metaData = await metaRes.json();
+                        metaSha = metaData.sha;
+                    }
+
+                    const content = btoa(unescape(encodeURIComponent(JSON.stringify(records))));
+                    await fetch(`${apiUrl}/${metaPath}`, {
+                        method: 'PUT',
+                        headers: { 'Authorization': `token ${config.token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: "Sync Bookmarks after Deletion", content: content, sha: metaSha })
+                    });
+
+                    console.log('雲端紀錄已連動刪除');
+                } catch (e) {
+                    console.error('雲端刪除失敗:', e);
+                } finally {
+                    if(icon) icon.classList.remove('ph-spinner', 'animate-spin');
+                }
+            }
         }
 
         let currentTxtChunks = [];
@@ -554,43 +615,37 @@
 
             const readerEl = document.getElementById('reader');
             const txtViewer = document.getElementById('txt-viewer');
-            const txtNav = document.getElementById('txt-nav');
+           
             const epubCont = document.getElementById('epub-viewer');
-            const epubNav = document.getElementById('epub-nav');
+            
             
             document.getElementById('reader-title').innerText = bookMeta.name;
             readerEl.classList.remove('hidden');
             txtViewer.classList.add('hidden');
-            txtNav.classList.add('hidden');
+            
             epubCont.classList.add('hidden');
-            epubNav.classList.add('hidden');
+            
 
             applyReaderSettings();
 
             if (bookMeta.type === 'txt') {
                 txtViewer.classList.remove('hidden');
-                txtNav.classList.remove('hidden');
+                // 隱藏 TXT 專用的底部翻頁導覽列，因為我們要改為上下捲動
+               
                 
-                const chunkSize = 3000;
-                currentTxtChunks = [];
-                let txtArr = bookContent.data.split('\n');
-                let chunk = '';
-                for(let line of txtArr) {
-                    chunk += line + '\n\n';
-                    if (chunk.length >= chunkSize) {
-                        currentTxtChunks.push(chunk.trim());
-                        chunk = '';
-                    }
-                }
-                if (chunk.trim()) currentTxtChunks.push(chunk.trim());
+                // 【關鍵修正】：取消切割 (Chunking)，改為一次性高效能純文字渲染
+                const formattedText = bookContent.data
+                    .split('\n')
+                    .map(p => p.trim())
+                    .filter(p => p.length > 0)
+                    .join('\n\n'); 
+                    
+                txtViewer.textContent = formattedText;
 
-                if (typeof bookMeta.lastReadPos === 'number' && bookMeta.lastReadPos < currentTxtChunks.length) {
-                    currentTxtIdx = bookMeta.lastReadPos;
-                } else {
-                    currentTxtIdx = 0;
-                }
-                
-                renderTxtChunk();
+                // 恢復上次閱讀的捲動位置 (lastReadPos 存的是 scrollTop 像素值)
+                setTimeout(() => { 
+                    txtViewer.scrollTop = typeof bookMeta.lastReadPos === 'number' ? bookMeta.lastReadPos : 0; 
+                }, 100);
             } else {
                 epubCont.classList.remove('hidden');
                 epubNav.classList.remove('hidden');
@@ -635,8 +690,6 @@
             document.getElementById('reader-settings').classList.add('hidden');
             const txtViewer = document.getElementById('txt-viewer');
             if (txtViewer) txtViewer.classList.add('hidden');
-            const txtNav = document.getElementById('txt-nav');
-            if (txtNav) txtNav.classList.add('hidden');
             currentBookId = null;
             if (currentEpub) {
                 currentEpub.destroy();
@@ -671,7 +724,6 @@
 
         function applyReaderSettings() {
             const txtViewer = document.getElementById('txt-viewer');
-            const txtNav = document.getElementById('txt-nav');
             const reader = document.getElementById('reader');
             const header = document.getElementById('reader-header');
             const nav = document.getElementById('epub-nav');
@@ -691,12 +743,12 @@
                 green: { bg: '#e3f0e7', text: '#2d3e33', header: '#d4e6d9', nav: '#d4e6d9' },
                 dark: { bg: '#0f172a', text: '#cbd5e1', header: '#1e293b', nav: '#1e293b' }
             };
+
             const current = themes[settings.theme];
             reader.style.backgroundColor = current.bg;
             if (txtViewer) txtViewer.style.color = current.text;
             header.style.backgroundColor = current.header;
             if (nav) nav.style.backgroundColor = current.nav;
-            if (txtNav) txtNav.style.backgroundColor = current.nav;
 
             ['light', 'sepia', 'green', 'dark'].forEach(t => {
                 const btn = document.getElementById('theme-' + t);
@@ -803,16 +855,26 @@
                                         reader.onload = () => resolve(reader.result.split(',')[1]);
                                         reader.readAsDataURL(blob);
                                     });
-                                    await fetch(`${apiUrl}/${filePath}`, {
+                                    const uploadRes = await fetch(`${apiUrl}/${filePath}`, {
                                         method: 'PUT',
                                         headers: { 'Authorization': `token ${config.token}`, 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ message: `Upload book ${local.name}`, content: base64Str })
                                     });
+
+                                    // 【關鍵修正】：強制驗證上傳結果
+                                    if (!uploadRes.ok) {
+                                        const err = await uploadRes.json();
+                                        console.error('上傳遭拒絕:', err);
+                                        alert(`《${local.name}》實體檔案上傳至雲端失敗。\n原因: 檔案過大或 API 限制。本機仍可閱讀，但無法跨裝置下載。`);
+                                        continue; // 中斷此書的標記，保留未上傳狀態
+                                    }
                                 }
                             }
-                            local.uploaded = true;
+                            // 只有在確認檔案已經存在於雲端，或剛剛成功上傳後，才標記為 true
+                            local.uploaded = true; 
                         } catch (err) {
                             console.error('File upload err:', err);
+                            continue; // 發生網路錯誤，中斷標記
                         }
                     }
                 }
