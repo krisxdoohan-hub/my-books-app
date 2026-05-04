@@ -226,7 +226,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.2.1";
+        const APP_VERSION = "v0.2.2";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
@@ -298,9 +298,10 @@
             initSettings();
             applyReaderSettings();
             
-            if (config.token && config.repo) {
-                syncCloudFiles();
-            }
+            // 停用自動同步，改由使用者手動點擊
+            // if (config.token && config.repo) {
+            //     syncCloudFiles(true); 
+            // }
 
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').then(reg => {
@@ -328,15 +329,23 @@
 
             // === 👇 新增這段：監聽 TXT 捲動事件，記憶閱讀斷點 ===
             const txtViewerElement = document.getElementById('txt-viewer');
+            let scrollTimer;
             if (txtViewerElement) {
                 txtViewerElement.addEventListener('scroll', () => {
-                    if (currentBookId) {
-                        const book = records.find(b => b.id === currentBookId);
-                        if (book && book.type === 'txt') {
-                            book.lastReadPos = txtViewerElement.scrollTop;
-                            saveLocalRecords();
+                    if (scrollTimer) clearTimeout(scrollTimer);
+                    scrollTimer = setTimeout(() => {
+                        if (currentBookId) {
+                            const book = records.find(b => b.id === currentBookId);
+                            if (book && book.type === 'txt') {
+                                const scrollHeight = txtViewerElement.scrollHeight - txtViewerElement.clientHeight;
+                                if (scrollHeight > 0) {
+                                    book.lastReadPos = txtViewerElement.scrollTop / scrollHeight;
+                                    book.lastReadTime = Date.now();
+                                    saveLocalRecords();
+                                }
+                            }
                         }
-                    }
+                    }, 500);
                 }, { passive: true });
             }
             // === 👆 新增結束 ===
@@ -399,6 +408,7 @@
                         type: isEpub ? 'epub' : 'txt',
                         size: file.size,
                         lastReadPos: 0,
+                        lastReadTime: Date.now(),
                         addedAt: new Date().toISOString()
                     };
 
@@ -543,39 +553,6 @@
             }
         }
 
-        let currentTxtChunks = [];
-        let currentTxtIdx = 0;
-
-        function renderTxtChunk() {
-            const el = document.getElementById('txt-viewer');
-            if (currentTxtChunks.length === 0) return;
-            el.textContent = currentTxtChunks[currentTxtIdx];
-            el.scrollTop = 0;
-            document.getElementById('txt-page-info').innerText = `${currentTxtIdx + 1} / ${currentTxtChunks.length}`;
-            
-            if (currentBookId) {
-                const b = records.find(x => x.id === currentBookId);
-                if (b) {
-                    b.lastReadPos = currentTxtIdx;
-                    saveLocalRecords();
-                }
-            }
-        }
-
-        function nextTxtChunk() {
-            if (currentTxtIdx < currentTxtChunks.length - 1) {
-                currentTxtIdx++;
-                renderTxtChunk();
-            }
-        }
-
-        function prevTxtChunk() {
-            if (currentTxtIdx > 0) {
-                currentTxtIdx--;
-                renderTxtChunk();
-            }
-        }
-
         // 5. 閱讀器 logic
         async function openReader(bookMeta) {
             currentBookId = bookMeta.id;
@@ -642,9 +619,18 @@
                     
                 txtViewer.textContent = formattedText;
 
-                // 恢復上次閱讀的捲動位置 (lastReadPos 存的是 scrollTop 像素值)
-                setTimeout(() => { 
-                    txtViewer.scrollTop = typeof bookMeta.lastReadPos === 'number' ? bookMeta.lastReadPos : 0; 
+                // 恢復上次閱讀的捲動位置 (支援百分比進度以適應不同手機螢幕)
+                setTimeout(() => {
+                    const maxScroll = txtViewer.scrollHeight - txtViewer.clientHeight;
+                    let targetScroll = 0;
+                    if (typeof bookMeta.lastReadPos === 'number') {
+                        if (bookMeta.lastReadPos <= 1) { // 預期為百分比 (0~1)
+                            targetScroll = maxScroll * bookMeta.lastReadPos;
+                        } else { // 舊版像素資料，相容處理
+                            targetScroll = bookMeta.lastReadPos;
+                        }
+                    }
+                    txtViewer.scrollTop = Math.max(0, targetScroll); 
                 }, 100);
             } else {
                 epubCont.classList.remove('hidden');
@@ -676,6 +662,7 @@
                     const b = records.find(x => x.id === currentBookId);
                     if (b) {
                         b.lastReadPos = location.start.cfi;
+                        b.lastReadTime = Date.now();
                         saveLocalRecords();
                     }
                 }
@@ -795,9 +782,9 @@
             applyReaderSettings();
         }
 
-        async function syncCloudFiles() {
+        async function syncCloudFiles(silent = false) {
             if (!config.token || !config.repo) {
-                alert('請先在設定中填寫 GitHub Token 與 Repo');
+                if (!silent) alert('請先在設定中填寫 GitHub Token 與 Repo');
                 return;
             }
             const icon = document.getElementById('sync-icon');
@@ -826,7 +813,15 @@
                 for (const remote of remoteRecords) {
                     const local = records.find(b => b.id === remote.id);
                     if (local) {
-                        if (remote.lastReadPos && remote.lastReadPos !== local.lastReadPos) {
+                        const remoteTime = remote.lastReadTime || 0;
+                        const localTime = local.lastReadTime || 0;
+                        
+                        // 根據最後閱讀時間決定要保留誰的進度 (解決跨裝置進度互相覆蓋問題)
+                        if (remoteTime > localTime) {
+                            local.lastReadPos = remote.lastReadPos;
+                            local.lastReadTime = remoteTime;
+                        } else if (!local.lastReadTime && !remote.lastReadTime && remote.lastReadPos !== undefined && remote.lastReadPos !== local.lastReadPos) {
+                            // 舊版無時間戳記的降級處理
                             local.lastReadPos = remote.lastReadPos;
                         }
                     } else {
@@ -889,14 +884,16 @@
                     body: JSON.stringify({ message: "Sync Bookmarks", content: content, sha: metaSha })
                 });
 
-                alert('同步完成！\n若有新書未下載，點擊該書面將自動下載。');
+                if (!silent) alert('同步完成！\n若有新書未下載，點擊該書面將自動下載。');
                 
             } catch (e) {
                 console.error('GH Sync Error:', e);
-                alert('同步失敗，可能授權過期或網路問題。');
+                if (!silent) alert('同步失敗，可能授權過期或網路問題。');
             } finally {
                 icon.classList.remove('ph-spinner', 'animate-spin');
                 renderLibrary();
             }
         }
     </script>
+</body>
+</html>
