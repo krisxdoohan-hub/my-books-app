@@ -20,6 +20,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jschardet/3.2.0/jschardet.min.js"></script>
+
     <style>
         body {
             -webkit-tap-highlight-color: transparent;
@@ -226,7 +228,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.2.2";
+        const APP_VERSION = "v0.2.3";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
@@ -391,13 +393,33 @@
                     // 【解決亂碼】：如果是 TXT，偵測編碼
                     if (!isEpub) {
                         const uint8 = new Uint8Array(contentData);
+
+                        // 擷取前 10KB 位元組進行編碼探測，兼顧精準度與記憶體效能
+                        const sampleSize = Math.min(uint8.length, 1024 * 10);
+                        let binaryString = '';
+                        for (let i = 0; i < sampleSize; i++) {
+                            binaryString += String.fromCharCode(uint8[i]);
+                        }
+
+                        // 使用 jschardet 偵測真實編碼
+                        const detected = jschardet.detect(binaryString);
+                        let encoding = 'utf-8'; // 預設防線
+
+                        if (detected && detected.encoding) {
+                            encoding = detected.encoding.toLowerCase();
+                            // 防呆機制：由於 TXT 缺乏檔頭，jschardet 有時會將純 Big5 誤判為歐洲語系
+                            if (encoding.includes('windows-125') || encoding === 'ascii') {
+                                encoding = 'big5';
+                            }
+                            console.log(`[系統] 偵測到檔案編碼為: ${encoding} (信心水準: ${detected.confidence})`);
+                        }
+
                         try {
-                            // 嘗試 UTF-8
-                            contentData = new TextDecoder('utf-8', { fatal: true }).decode(uint8);
+                            // 依據偵測出來的結果精確轉換字串
+                            contentData = new TextDecoder(encoding).decode(uint8);
                         } catch (err) {
-                            // 失敗則嘗試 GBK (繁簡網文常用)
-                            console.log('UTF-8 失敗，嘗試 GBK 解碼');
-                            contentData = new TextDecoder('gbk').decode(uint8);
+                            console.warn('[系統] 偵測編碼轉譯失敗，執行終極防線：強制轉換為 Big5');
+                            contentData = new TextDecoder('big5').decode(uint8);
                         }
                     }
 
@@ -592,16 +614,15 @@
 
             const readerEl = document.getElementById('reader');
             const txtViewer = document.getElementById('txt-viewer');
-           
             const epubCont = document.getElementById('epub-viewer');
-            
-            
+            const epubNav = document.getElementById('epub-nav'); // [修正點1]：補上遺漏的導覽列 DOM 綁定
+
             document.getElementById('reader-title').innerText = bookMeta.name;
             readerEl.classList.remove('hidden');
             txtViewer.classList.add('hidden');
-            
             epubCont.classList.add('hidden');
-            
+            epubNav.classList.add('hidden'); // [修正點2]：切換檔案時，確保底部翻頁列預設為隱藏狀態
+
 
             applyReaderSettings();
 
