@@ -214,7 +214,7 @@
             
 
             <!-- EPUB 內容區 -->
-            <div id="epub-viewer" class="flex-1 hidden"></div>
+            <div id="epub-viewer" class="flex-1 overflow-y-auto no-scrollbar hidden"></div>
             
             <!-- 閱讀導覽 (EPUB 專用) -->
             <footer id="epub-nav" class="hidden flex items-center justify-between px-6 py-4 bg-slate-900/50 backdrop-blur-sm shrink-0 border-t border-white/5">
@@ -228,7 +228,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.2.4";
+        const APP_VERSION = "v0.2.5";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
