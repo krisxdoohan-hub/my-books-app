@@ -1,5 +1,5 @@
 // 強制進版至 v0.1.3 以觸發更新機制
-const CACHE_NAME = 'star-reader-v0.2.5';
+const CACHE_NAME = 'star-reader-v0.2.6';
 const ASSETS = [
     './',
     // 絕對不可放 './index.html'，以避開 CF 308 錯誤
