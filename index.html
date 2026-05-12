@@ -228,7 +228,7 @@
 
     <script>
         // 0. 版本資訊
-        const APP_VERSION = "v0.2.5";
+        const APP_VERSION = "v0.2.6";
 
         /** 
          * 1. IndexedDB 核心邏輯 - 解決大型檔案儲存問題
@@ -664,8 +664,8 @@
             const epubCont = document.getElementById('epub-viewer');
         epubCont.innerHTML = '';
         currentEpub = ePub(data);
-        // 將 flow 改為 scrolled-doc 達成垂直捲動，manager 改為 continuous 達成跨章節無縫滑動
-        rendezvous = currentEpub.renderTo("epub-viewer", { width: "100%", height: "100%", flow: "scrolled-doc", manager: "continuous" });
+        // 【修復鬼打牆】：保留 scrolled-doc (垂直捲動)，但將 manager 改回 default (單章渲染)，由底部按鈕切換章節
+        rendezvous = currentEpub.renderTo("epub-viewer", { width: "100%", height: "100%", flow: "scrolled-doc", manager: "default" });
 
         rendezvous.themes.register({
                 light: { body: { "color": "#334155 !important", "background": "transparent !important" } },
